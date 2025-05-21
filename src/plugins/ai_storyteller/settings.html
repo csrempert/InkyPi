@@ -1,0 +1,83 @@
+<div class="form-group">
+    <label for="themePrompt" class="form-label">Story Theme Prompt:</label>
+    <input type="text"
+           id="themePrompt"
+           name="textPrompt"
+           placeholder="e.g., A boy and his dog explore space"
+           required
+           class="form-input">
+</div>
+
+<!-- Image model selection -->
+<div class="form-group">
+    <label for="imageModel" class="form-label">Image Model:</label>
+    <select id="imageModel" name="imageModel" class="form-input">
+        <option value="dall-e-3" selected>DALL·E 3</option>
+        <option value="dall-e-2">DALL·E 2</option>
+        <option value="gpt-4o">GPT‑4o (image generation)</option>
+    </select>
+</div>
+
+<!-- Quality (only for DALL·E 3) -->
+<div class="form-group">
+    <label for="quality" class="form-label">Quality:</label>
+    <select id="quality" name="quality" class="form-input">
+        <option value="hd">HD</option>
+        <option value="standard" selected>Standard</option>
+    </select>
+</div>
+
+<!-- Language‑model selection -->
+<div class="form-group">
+    <label for="textModel" class="form-label">Language Model:</label>
+    <select id="textModel" name="textModel" class="form-input">
+        <option value="gpt-4o" selected>ChatGPT‑4o</option>
+        <option value="gpt-4o-mini">GPT‑4o‑mini</option>
+        <option value="gpt-3.5-turbo">GPT‑3.5‑Turbo</option>
+    </select>
+</div>
+
+<!-- ElevenLabs voice selection -->
+<div class="form-group">
+    <label for="voiceId" class="form-label">Narration Voice (ElevenLabs):</label>
+    <select id="voiceId" name="voiceId" class="form-input">
+        <option value="AddVoice" selected>Add Voice (default)</option>
+        <option value="Adam">Adam</option>
+        <option value="Bella">Bella</option>
+        <option value="Sam">Sam</option>
+    </select>
+</div>
+
+<!-- Story length -->
+<div class="form-group">
+    <label for="storyLength" class="form-label">Story Length:</label>
+    <select id="storyLength" name="storyLength" class="form-input">
+        <option value="short">Short (~150 words)</option>
+        <option value="medium" selected>Medium (~250 words)</option>
+        <option value="long">Long (~400 words)</option>
+    </select>
+</div>
+
+<script>
+/* Populate and wire settings */
+document.addEventListener('DOMContentLoaded', () => {
+    const qs = id => document.getElementById(id);
+
+    if (typeof loadPluginSettings !== 'undefined' && loadPluginSettings) {
+        qs('themePrompt').value  = pluginSettings.textPrompt     || '';
+        qs('textModel').value    = pluginSettings.textModel      || 'gpt-4o';
+        qs('voiceId').value      = pluginSettings.voiceId        || 'Unknown';
+        qs('storyLength').value  = pluginSettings.storyLength    || 'medium';
+        qs('imageModel').value   = pluginSettings.imageModel     || 'dall-e-3';
+        qs('quality').value      = pluginSettings.quality        || 'standard';
+    }
+
+    function toggleQuality() {
+        const model = qs('imageModel').value;
+        qs('quality').disabled = model !== 'dall-e-3';
+    }
+
+    qs('imageModel').addEventListener('change', toggleQuality);
+    toggleQuality(); // run once on load
+});
+</script>
