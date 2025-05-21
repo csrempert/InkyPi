@@ -1,139 +1,92 @@
 """
 ai_storyteller.py  –  InkyPi standalone plugin
+(compatible with openai-python ≥ 1.0)
 
-Fully self‑contained bedtime‑story generator:
-
-1. Generates an illustration with OpenAI Images (DALL·E 3)
-2. Generates a short bedtime story with ChatGPT
-3. Narrates the story out loud (ElevenLabs if API key present, else eSpeak)
-4. Returns the PIL.Image for the Inky Impression display
-
-Environment variables required (set in Device → Env in InkyPi):
-
-OPENAI_API_KEY          : for both image + story generation
-Optional:
-ELEVENLABS_API_KEY      : high‑quality TTS (defaults to eSpeak if absent)
-STORYTELLER_VOICE_ID    : ElevenLabs voice ID (defaults Unknown)
+Creates: illustration + story + narration.
 """
 
 from __future__ import annotations
-
-import logging
-import subprocess
-import tempfile
-from io import BytesIO
+import logging, subprocess, tempfile, requests, pathlib, os
 from typing import Any, Dict
-
-import requests
 from PIL import Image
+from io import BytesIO
+
+# ── openai v1 client ──────────────────────────────────────────────────────────
+try:
+    from openai import OpenAI          # pip install openai>=1.0
+except ImportError as exc:
+    raise RuntimeError(
+        "openai>=1.0 is required.  Run:  pip install openai --upgrade"
+    ) from exc
 
 # InkyPi base
 from plugins.base_plugin.base_plugin import BasePlugin
-
-try:
-    import openai
-except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("openai package not installed.  Run `pip install openai`.") from exc
 
 logger = logging.getLogger(__name__)
 
 
 class AIStoryteller(BasePlugin):
-    """Create illustration + story + audio."""
+    """Create illustration + story + audio for bedtime."""
 
-    # ------------------------------------------------------------------ #
-    #  Public InkyPi hooks
-    # ------------------------------------------------------------------ #
-
+    # ─────────────────────────────────── public hook ──────────────────────────
     def generate_image(  # type: ignore[override]
         self, settings: Dict[str, Any], device_config: "DeviceConfig"
     ) -> Image.Image:
-        """
-        Full pipeline executed by InkyPi:
-            • read prompt from settings["textPrompt"]
-            • create story  (GPT‑4o)
-            • create image  (DALL·E 3)
-            • narrate story (ElevenLabs or eSpeak)
-            • return PIL.Image for display
-        """
-        prompt: str = str(settings.get("textPrompt", "")).strip()
-        if not prompt:
-            raise RuntimeError("Storyteller: A prompt is required.")
 
+        prompt       = str(settings.get("textPrompt", "")).strip()
         text_model   = settings.get("textModel", "gpt-4o")
         story_len    = settings.get("storyLength", "medium")
         image_model  = settings.get("imageModel", "dall-e-3")
         quality      = settings.get("quality", "standard")
-        voice_id     = settings.get("voiceId", "Unknown")
+        voice_id     = settings.get("voiceId", "21m00Tcm4TlvDq8ikWAM")
 
-        api_key: str | None = device_config.load_env_key("OPENAI_API_KEY")
+        if not prompt:
+            raise RuntimeError("Storyteller: A prompt is required.")
+
+        api_key = device_config.load_env_key("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("Storyteller: OPENAI_API_KEY is missing.")
-        openai.api_key = api_key
+        client = OpenAI(api_key=api_key)
 
-        # 1️⃣  Build story
-        story_text = self._create_story(prompt, text_model, story_len)
-
-        # 2️⃣  Narrate asynchronously (non‑blocking)
+        # 1️⃣  story
+        story_text = self._create_story(client, prompt, text_model, story_len)
+        # 2️⃣  narration
         self._narrate(story_text, device_config, voice_id)
-
-        # 3️⃣  Build illustration
-        illustration = self._create_image(prompt, image_model, quality)
+        # 3️⃣  illustration
+        illustration = self._create_image(client, prompt, image_model, quality)
 
         return illustration
 
-    # ------------------------------------------------------------------ #
-    #  Settings UI (minimal)
-    # ------------------------------------------------------------------ #
-
+    # ───────────────────────────── settings template ──────────────────────────
     def generate_settings_template(self) -> Dict[str, Any]:
-        """Expose a single textPrompt field in the InkyPi UI."""
         return {
             "textPrompt": {
                 "type": "text",
                 "label": "Story prompt",
-                "placeholder": "e.g. A boy and his dog visit the moon",
+                "placeholder": "e.g. A boy and his cat visit the moon",
                 "default": "",
             },
-            "textModel": {
-                "type": "text",
-                "default": "gpt-4o",
-            },
-            "storyLength": {
-                "type": "text",
-                "default": "medium",
-            },
-            "imageModel": {
-                "type": "text",
-                "default": "dall-e-3",
-            },
-            "quality": {
-                "type": "text",
-                "default": "standard",
-            },
-            "voiceId": {
-                "type": "text",
-                "default": "Unknown",
-            },
+            "textModel":   {"type": "text", "default": "gpt-4o"},
+            "storyLength": {"type": "text", "default": "medium"},
+            "imageModel":  {"type": "text", "default": "dall-e-3"},
+            "quality":     {"type": "text", "default": "standard"},
+            "voiceId":     {"type": "text", "default": "21m00Tcm4TlvDq8ikWAM"},
         }
 
-    # ------------------------------------------------------------------ #
-    #  Helpers
-    # ------------------------------------------------------------------ #
-
-    # ------ STORY ----------------------------------------------------- #
-    def _create_story(self, theme_prompt: str, model: str, length: str) -> str:
-        """Generate a gentle, ~250‑word bedtime story."""
+    # ───────────────────────────── helpers ────────────────────────────────────
+    def _create_story(
+        self, client: OpenAI, theme_prompt: str, model: str, length: str
+    ) -> str:
         system_prompt = (
             "You are a warm, gentle storyteller for toddlers. "
             "Write a calming bedtime story (~250 words) featuring a toddler "
-            "and his dog. End happily."
+            "and his cat. End happily."
         )
-        user_prompt = f"Theme: {theme_prompt}"
-        length_map = {"short": 200, "medium": 400, "long": 600}
-        max_toks = length_map.get(length, 400)
+        user_prompt   = f"Theme: {theme_prompt}"
+        max_toks      = {"short": 200, "medium": 400, "long": 600}.get(length, 400)
+
         try:
-            response = openai.ChatCompletion.create(
+            resp = client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -142,97 +95,92 @@ class AIStoryteller(BasePlugin):
                 max_tokens=max_toks,
                 temperature=0.7,
             )
-            story = response.choices[0].message.content.strip()
-            logger.debug("Story generated (%d chars)", len(story))
-            return story
-        except Exception as exc:  # pragma: no cover
+            return resp.choices[0].message.content.strip()
+        except Exception as exc:
             logger.exception("OpenAI ChatCompletion error")
             raise RuntimeError(f"Storyteller: Story generation failed: {exc}") from exc
 
-    # ------ ILLUSTRATION --------------------------------------------- #
-    def _create_image(self, theme_prompt: str, model: str, quality: str) -> Image.Image:
-        """Create a cute illustration with DALL·E 3 and return as PIL.Image."""
+    # ------------------------------------------------------------------------ #
+    def _create_image(
+        self, client: OpenAI, theme_prompt: str, model: str, quality: str
+    ) -> Image.Image:
         image_prompt = (
             "Cute, colorful storybook illustration, soft watercolor style, "
-            "featuring a toddler and his dog, "
-            f"theme: {theme_prompt}, gentle night‑time lighting."
+            "featuring a toddler and his cat, "
+            f"theme: {theme_prompt}, gentle night-time lighting."
         )
         try:
             if model in ("dall-e-3", "gpt-4o"):
                 params = {
-                    "model": model,
+                    "model":  model,
                     "prompt": image_prompt,
-                    "n": 1,
-                    "size": "1024x768",
+                    "n":      1,
+                    "size":   "1792x1024",
                 }
                 if model == "dall-e-3":
                     params["quality"] = quality
-                img_resp = openai.images.generate(**params)
+                img_resp = client.images.generate(**params)
             elif model == "dall-e-2":
-                img_resp = openai.images.generate(
+                img_resp = client.images.generate(
                     model="dall-e-2",
                     prompt=image_prompt,
                     n=1,
-                    size="1024x768",
+                    size="1792x1024",
                 )
             else:
                 raise RuntimeError(f"Unsupported image model: {model}")
-            image_url = img_resp.data[0].url
-            img_bytes = requests.get(image_url, timeout=30).content
+
+            url = img_resp.data[0].url
+            img_bytes = requests.get(url, timeout=30).content
             return Image.open(BytesIO(img_bytes)).convert("RGB")
         except Exception as exc:
             logger.exception("OpenAI image generation error")
             raise RuntimeError(f"Storyteller: Illustration failed: {exc}") from exc
 
-    # ---------------------- AUDIO / TTS ------------------------------ #
-    def _narrate(self, story: str, device_config: "DeviceConfig", voice_id: str) -> None:
-        """Speak story using ElevenLabs if available; else fallback to eSpeak."""
-        if device_config.load_env_key("ELEVENLABS_API_KEY"):
-            self._narrate_eleven_labs(story, device_config, voice_id)
+    # ───────────────────────────── narration ─────────────────────────────────
+    def _narrate(self, story: str, config: "DeviceConfig", voice_id: str) -> None:
+        if config.load_env_key("ELEVENLABS_API_KEY"):
+            self._narrate_eleven_labs(story, config, voice_id)
         else:
             self._narrate_espeak(story, voice_id)
 
-    # ---- espeak fallback ------------------------------------------- #
-    def _narrate_espeak(self, story: str, voice_id: str) -> None:
+    def _narrate_espeak(self, story: str, _: str) -> None:
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                wav_path = tmp.name
-            subprocess.run(
-                ["espeak", "-ven+f3", "-s150", "-w", wav_path, story],
-                check=True,
-            )
-            subprocess.Popen(["aplay", wav_path])
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "Storyteller: espeak not installed. `sudo apt install espeak-ng`."
-            ) from exc
+                wav = tmp.name
+            subprocess.run(["espeak", "-ven+f3", "-s150", "-w", wav, story], check=True)
+            subprocess.Popen(["aplay", wav])
         except Exception as exc:
             raise RuntimeError(f"Storyteller: espeak failed: {exc}") from exc
 
-    # ---- ElevenLabs high‑quality voice ----------------------------- #
-    def _narrate_eleven_labs(self, story: str, device_config: "DeviceConfig", voice_id: str) -> None:
+    def _narrate_eleven_labs(
+        self, story: str, config: "DeviceConfig", voice_id: str
+    ) -> None:
         import requests as _rq
 
-        api_key = device_config.load_env_key("ELEVENLABS_API_KEY")
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        api_key = config.load_env_key("ELEVENLABS_API_KEY")
+        url     = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         payload = {
             "text": story,
             "model_id": "eleven_monolingual_v1",
             "voice_settings": {"stability": 0.3, "similarity_boost": 0.85},
         }
-        headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+        headers = {
+            "xi-api-key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        }
 
         try:
-            r = _rq.post(url, json=payload, timeout=30)
+            r = _rq.post(url, json=payload, headers=headers, timeout=30)
+            if r.status_code in (401, 403):
+                logger.warning("ElevenLabs auth/voice error (%s) – falling back to eSpeak", r.status_code)
+                self._narrate_espeak(story, voice_id)
+                return
             r.raise_for_status()
-            audio_bytes = r.content
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                tmp.write(audio_bytes)
-                mp3_path = tmp.name
-            subprocess.Popen(["mpg123", mp3_path])
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "Storyteller: mpg123 not installed. `sudo apt install mpg123`."
-            ) from exc
+                tmp.write(r.content)
+                mp3 = tmp.name
+            subprocess.Popen(["mpg123", mp3])
         except Exception as exc:
             raise RuntimeError(f"Storyteller: ElevenLabs TTS failed: {exc}") from exc
